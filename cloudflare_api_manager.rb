@@ -5,8 +5,8 @@ require 'ipaddr'
 
 # Various settings
 API_ENDPOINT = 'https://api.cloudflare.com/client/v4/user/firewall/access_rules/rules'.freeze
-CLOUDFLARE_USERNAME     = 'YOUR_CLOUDFLARE_USERNAME_GOES_HERE'.freeze
-CLOUDFLARE_API_KEY      = 'YOUR_API_KEY_GOES_HERE'.freeze
+CLOUDFLARE_USERNAME     = '<your username/email here>'.freeze
+CLOUDFLARE_API_KEY      = '<your api key here>'.freeze
 
 # Timeout settings
 HTTP_READ_TIMEOUT = 10
@@ -29,7 +29,7 @@ end
 # Exit if parameters are missing or invalid
 exit unless %w(ban unban).include?(command) && ip
 
-def send_request(url, json_data, request_type)
+def send_request(url, data, request_type)
   # Construct our HTTP request
   uri  = URI.parse(url)
   http = Net::HTTP.new(uri.host,
@@ -40,22 +40,25 @@ def send_request(url, json_data, request_type)
                        HTTP_PROXY_PASSWORD)
   http.read_timeout = HTTP_READ_TIMEOUT
   http.use_ssl = true
+  
   request = Net::HTTP::Post.new(uri.request_uri) if request_type == 'POST'
   request = Net::HTTP::Delete.new(uri.request_uri) if request_type == 'DELETE'
+  request = Net::HTTP::Get.new(uri.request_uri) if request_type == 'GET'
 
   # Add headers for authentication
   request['Content-Type'] = 'application/json'
   request['X-Auth-Email'] = CLOUDFLARE_USERNAME
   request['X-Auth-Key']   = CLOUDFLARE_API_KEY
 
-  request.body = json_data
+  request.body = data 
+
   http.request(request)
 end
 
 def ban_ip(ip)
   # Construct our payload
   data = {}
-  data[:mode] = 'challenge'
+  data[:mode] = 'block'
   data[:configuration] = {}
   data[:configuration][:target] = 'ip'
   data[:configuration][:value] = ip
@@ -72,14 +75,33 @@ def unban_ip(id)
   send_request(url, nil, 'DELETE')
 end
 
-ban_ip(ip) if command == 'ban'
+def list_ip(ip)
+  data = {}
+  data['match'] = 'all'
+  data['per_page'] = '1'
+  data['configuration.target'] = 'ip'
+  data['configuration.value'] = ip
 
-if command == 'unban'
-  # Ban the IP again to obtain the ID of the record we want to delete
-  # This is a tradeoff between storing the ID's locally vs. fetching from
-  # CloudFlare
-  ban_result = ban_ip(ip)
-  result_hash = JSON.parse(ban_result.body)
-  id = result_hash['result']['id']
-  unban_ip(id)
+  # build the url suffix instead of sending the data in the body
+  # (according to cloudflare api docs)
+  url_suffix = "?" 
+  for i in data do
+    url_suffix << "#{i[0]}=#{i[1]}&"
+  end
+  url_suffix[..-1]
+
+  send_request("#{API_ENDPOINT}#{url_suffix}", nil, 'GET')
+end
+
+if command == 'ban'
+  ban_ip(ip) 
+elsif command == 'unban'
+  begin
+    # get the ips rule "id", which is required to delete the firewall rule
+    result_hash = JSON.parse(list_ip(ip).body)
+    id = result_hash['result'][0]['id']
+    unban_ip(id)
+  rescue
+    puts "no banned ip '#{ip}' found in your cloudflare firewall"
+  end
 end
